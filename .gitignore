@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+.env
+.user_uploaded/
+Catalist_AI_Intern_Build_Test_Data.zip
