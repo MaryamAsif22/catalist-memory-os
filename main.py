@@ -1,256 +1,172 @@
 #!/usr/bin/env python3
 """
-Catalist Media Meeting Memory Agent - Unified CLI Entrypoint.
-Provides commands for:
-  - Ingestion (deterministic, zero LLM)
-  - Live single-question demo
-  - TS3012 executive brief generation
-  - Full benchmark execution generating answers.json
-  - Programmatic submission audit
-  - Interactive UI server (frontend)
+main.py - Unified Production CLI & Application Entrypoint for Catalist Meeting Intelligence OS.
+
+Commands:
+  - serve   : Launch the high-aesthetic editorial UI + fixed intelligence engine
+  - ask     : Query the multi-meeting intelligence agent with verbatim citations
+  - brief   : Output the verified pre-meeting executive brief for Team TS3012
+  - run     : Execute full 25-question benchmark evaluation generating answers.json
+  - audit   : Run compliance, substring citation verification, and leakage audit
+  - ingest  : Ingest raw transcripts into the high-performance SQLite store
 """
 
 import os
 import sys
 import json
 import argparse
-from typing import Dict, List, Any
+import subprocess
+from pathlib import Path
 
-from src.ingestion import ingest_corpus
-from src.query_planner import QueryPlanner
-from src.temporal_resolver import TemporalResolver
-from src.briefing_pipeline import BriefingPipeline
+# Auto-delegate to local .venv if run with system Python without venv activated
+def _maybe_reexec_in_venv():
+    if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+        return
+    venv_py = Path(__file__).resolve().parent / ".venv" / "Scripts" / "python.exe"
+    if venv_py.exists() and sys.executable.lower() != str(venv_py).lower():
+        sys.exit(subprocess.call([str(venv_py)] + sys.argv))
+
+_maybe_reexec_in_venv()
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except ImportError:
+    pass
 
 
-def cmd_ingest(args):
-    print(">>> Running Deterministic Transcript Ingestion...")
-    ingest_corpus(args.transcripts, args.db)
+def cmd_serve(args):
+    """Launch the unified web application server."""
+    from app import run_server
+    port = getattr(args, "port", 8000)
+    no_open = getattr(args, "no_open", False)
+    run_server(port=port, open_browser=not no_open)
 
 
 def cmd_ask(args):
-    db_path = args.db
-    if not os.path.exists(db_path):
-        print(f"Database {db_path} not found. Running ingestion first...")
-        ingest_corpus(args.transcripts, db_path)
+    """Interactive / programmatic single-question query."""
+    from src.agent import MeetingAgent
 
-    resolver = TemporalResolver(db_path)
-    planner = QueryPlanner()
+    agent = MeetingAgent()
+    qid = args.qid or "CUSTOM_QUERY"
+    qtext = args.query or ""
 
     if args.qid:
         with open(args.questions, "r", encoding="utf-8") as f:
             qdata = json.load(f)
         qitem = next((q for q in qdata["questions"] if q["question_id"] == args.qid), None)
         if not qitem:
-            print(f"Error: Question ID {args.qid} not found in {args.questions}")
+            print(f"[Error] Question ID {args.qid} not found in {args.questions}")
             sys.exit(1)
         qid = qitem["question_id"]
         qtext = qitem["question"]
-        team = qitem["team"]
+        team = qitem.get("team")
     else:
-        qid = "DEMO"
-        qtext = args.query
-        team = planner.extract_team_id(qtext, default_team="TS3012")
+        team = getattr(args, "team", None) or agent.retriever.extract_team_id(qtext)
 
-    print(f"\n=======================================================")
-    print(f"QUESTION [{qid}] (Team: {team}):")
+    print(f"\n" + "=" * 65)
+    print(f"QUESTION [{qid}] (Team: {team or 'GLOBAL'}):")
     print(f"{qtext}")
-    print(f"=======================================================")
+    print("=" * 65)
 
-    res = resolver.resolve_question(qid, qtext, team)
+    res = agent.answer_question({
+        "question_id": qid,
+        "team": team,
+        "question": qtext
+    })
 
     print("\nANSWER:")
     print(res["answer"])
     print("\nCITATIONS:")
-    for i, c in enumerate(res["citations"], 1):
-        print(f"  [{i}] ({c['meeting_id']}): \"{c['quote']}\"")
-    print(f"=======================================================\n")
+    for idx, c in enumerate(res.get("citations", []), 1):
+        print(f"  [{idx}] ({c['meeting_id']}): \"{c['quote']}\"")
+    print(f"\nSynthesizer: {res.get('synthesizer')} | Latency: {res.get('latency_sec', 0.0)}s")
+    print("=" * 65 + "\n")
 
 
 def cmd_brief(args):
-    db_path = args.db
-    if not os.path.exists(db_path):
-        print(f"Database {db_path} not found. Running ingestion first...")
-        ingest_corpus(args.transcripts, db_path)
+    """Display the pre-meeting executive brief for Team TS3012."""
+    brief_text = ""
+    if os.path.exists("answers.json"):
+        with open("answers.json", "r", encoding="utf-8") as f:
+            adata = json.load(f)
+            brief_text = adata.get("brief", "")
 
-    pipeline = BriefingPipeline(db_path)
-    brief = pipeline.generate_ts3012_brief()
+    if not brief_text:
+        from src.brief import generate_ts3012_brief
+        brief_text = generate_ts3012_brief()
 
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 75)
     print("EXECUTIVE BRIEF: TEAM TS3012 (PRE-MEETING 'd')")
-    print("=" * 80)
-    print(brief)
-    print("=" * 80 + "\n")
+    print("=" * 75)
+    print(brief_text)
+    print("=" * 75 + "\n")
 
-    if args.output:
+    if getattr(args, "output", None):
         with open(args.output, "w", encoding="utf-8") as f:
-            f.write(brief)
+            f.write(brief_text)
         print(f"Brief saved to {args.output}")
 
 
 def cmd_run(args):
-    db_path = args.db
-    if not os.path.exists(db_path):
-        print(f"Database {db_path} not found. Running ingestion first...")
-        ingest_corpus(args.transcripts, db_path)
-
-    with open(args.questions, "r", encoding="utf-8") as f:
-        qdata = json.load(f)
-
-    questions = qdata.get("questions", [])
-    print(f"\n>>> Executing full benchmark across {len(questions)} questions...")
-
-    resolver = TemporalResolver(db_path)
-    answers = []
-
-    for idx, q in enumerate(questions, 1):
-        qid = q["question_id"]
-        team = q["team"]
-        qtext = q["question"]
-        print(f"  [{idx:02d}/25] Resolving {qid} for team {team}...", end="\r")
-        res = resolver.resolve_question(qid, qtext, team)
-        answers.append(res)
-
-    print(f"\n>>> Synthesizing executive pre-meeting brief for Team TS3012...")
-    pipeline = BriefingPipeline(db_path)
-    brief_text = pipeline.generate_ts3012_brief()
-
-    submission = {
-        "answers": answers,
-        "brief": brief_text
-    }
-
-    out_file = args.output or "answers.json"
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(submission, f, indent=2)
-
-    print(f"\n[DONE] Full submission saved to {out_file} ({len(answers)} answers + executive brief).")
-
-    if args.verify:
-        print("\n>>> Launching automated verification audit...")
-        from scripts.verify_submission import audit_submission
-        audit_submission(out_file, args.questions, args.transcripts)
+    """Run evaluation benchmark across all 25 questions."""
+    from run import run_evaluation
+    run_evaluation(team_filter=getattr(args, "team", None), fresh=getattr(args, "fresh", False))
 
 
 def cmd_audit(args):
-    from scripts.verify_submission import audit_submission
-    audit_submission(args.answers, args.questions, args.transcripts)
+    """Run verification audit against evaluation benchmarks."""
+    from eval_benchmarks import evaluate_answers_file
+    evaluate_answers_file()
 
 
-def cmd_serve(args):
-    import http.server
-    import socketserver
-
-    port = args.port
-    directory = args.dir
-
-    if not os.path.exists(os.path.join(directory, "index.html")):
-        print(f"Error: {directory}/index.html not found. Building frontend first...")
-        from scripts import build_frontend
-
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=directory, **kw)
-
-        def end_headers(self):
-            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-            self.send_header('Pragma', 'no-cache')
-            self.send_header('Expires', '0')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-            super().end_headers()
-
-        def do_OPTIONS(self):
-            self.send_response(200)
-            self.end_headers()
-
-        def do_POST(self):
-            if self.path == '/api/ask':
-                from src.dynamic_agent import DynamicMeetingAgent
-                agent = DynamicMeetingAgent()
-
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8')
-                try:
-                    data = json.loads(body)
-                except Exception:
-                    data = {'query': body}
-                query = data.get('query', '')
-                res = agent.ask(query)
-
-                resp_bytes = json.dumps(res).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Content-Length', str(len(resp_bytes)))
-                self.end_headers()
-                self.wfile.write(resp_bytes)
-                return
-
-            super().do_POST()
-
-    with socketserver.TCPServer(("", port), Handler) as httpd:
-        url = f"http://localhost:{port}"
-        print(f"\n=======================================================")
-        print(f"CATALIST DASHBOARD LIVE: {url}")
-        print(f"Serving from '{directory}/' ... Press Ctrl+C to stop.")
-        print(f"=======================================================\n")
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\nServer stopped.")
+def cmd_ingest(args):
+    """Deterministic transcript corpus ingestion."""
+    from src.ingest import ingest_corpus
+    ingest_corpus(args.transcripts, args.db)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Catalist Media Meeting Memory CLI")
+    parser = argparse.ArgumentParser(description="Catalist Meeting Intelligence OS - Master CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Ingest
-    p_ingest = subparsers.add_parser("ingest", help="Deterministic ingestion of transcripts")
-    p_ingest.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
-    p_ingest.add_argument("--db", default="meeting_memory.db", help="Path to output database")
+    # Serve
+    p_serve = subparsers.add_parser("serve", help="Launch interactive UI frontend dashboard")
+    p_serve.add_argument("--port", type=int, default=8000, help="Port to serve on (default: 8000)")
+    p_serve.add_argument("--no-open", action="store_true", help="Do not automatically open browser")
 
     # Ask
     p_ask = subparsers.add_parser("ask", help="Live single-question demo")
     p_ask.add_argument("--qid", help="Benchmark Question ID (e.g. Q01 to Q25)")
     p_ask.add_argument("--query", help="Custom freeform question")
+    p_ask.add_argument("--team", help="Optional Team ID filter (e.g. TS3006)")
     p_ask.add_argument("--questions", default="questions.json", help="Path to questions.json")
-    p_ask.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
-    p_ask.add_argument("--db", default="meeting_memory.db", help="Path to database")
 
     # Brief
     p_brief = subparsers.add_parser("brief", help="Generate TS3012 executive brief")
-    p_brief.add_argument("--team", default="TS3012", help="Team ID (default TS3012)")
     p_brief.add_argument("--output", help="Optional output text file path")
-    p_brief.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
-    p_brief.add_argument("--db", default="meeting_memory.db", help="Path to database")
 
     # Run
-    p_run = subparsers.add_parser("run", help="Run full benchmark and produce answers.json")
-    p_run.add_argument("--all", action="store_true", help="Run all 25 benchmark questions")
-    p_run.add_argument("--output", default="answers.json", help="Path to output answers.json")
-    p_run.add_argument("--verify", action="store_true", help="Run verification audit immediately")
-    p_run.add_argument("--questions", default="questions.json", help="Path to questions.json")
-    p_run.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
-    p_run.add_argument("--db", default="meeting_memory.db", help="Path to database")
+    p_run = subparsers.add_parser("run", help="Run full benchmark across questions")
+    p_run.add_argument("--team", help="Filter evaluation to specific team")
+    p_run.add_argument("--fresh", action="store_true", help="Regenerate all answers from scratch")
 
     # Audit
     p_audit = subparsers.add_parser("audit", help="Run verification audit on answers.json")
-    p_audit.add_argument("--answers", default="answers.json", help="Path to answers.json")
-    p_audit.add_argument("--questions", default="questions.json", help="Path to questions.json")
-    p_audit.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
 
-    # Serve
-    p_serve = subparsers.add_parser("serve", help="Launch interactive UI frontend dashboard")
-    p_serve.add_argument("--port", type=int, default=8000, help="Port to serve on (default: 8000)")
-    p_serve.add_argument("--dir", default="frontend", help="Directory to serve (default: frontend)")
+    # Ingest
+    p_ingest = subparsers.add_parser("ingest", help="Deterministic ingestion of transcripts")
+    p_ingest.add_argument("--transcripts", default="transcripts", help="Path to transcripts")
+    p_ingest.add_argument("--db", default="data/meeting_store.db", help="Path to output database")
 
     args = parser.parse_args()
     if not args.command:
-        parser.print_help()
-        sys.exit(0)
+        # Default behavior: run serve
+        cmd_serve(argparse.Namespace(port=8000, no_open=False))
+        return
 
-    if args.command == "ingest":
-        cmd_ingest(args)
+    if args.command == "serve":
+        cmd_serve(args)
     elif args.command == "ask":
         cmd_ask(args)
     elif args.command == "brief":
@@ -259,8 +175,8 @@ def main():
         cmd_run(args)
     elif args.command == "audit":
         cmd_audit(args)
-    elif args.command == "serve":
-        cmd_serve(args)
+    elif args.command == "ingest":
+        cmd_ingest(args)
 
 
 if __name__ == "__main__":

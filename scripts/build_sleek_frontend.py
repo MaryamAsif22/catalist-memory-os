@@ -19,14 +19,33 @@ with:
 
 import json
 import os
+import sqlite3
+from collections import defaultdict
 
-with open("frontend_data.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
+# 1. Load questions and verified answers
+with open("questions.json", "r", encoding="utf-8") as f:
+    qdata = json.load(f)
+questions_list = qdata.get("questions", [])
+qmap = {q["question_id"]: q for q in questions_list}
 
-items = data.get("questions") or data.get("combined_questions")
-brief = data["brief"]
+with open("answers.json", "r", encoding="utf-8") as f:
+    adata = json.load(f)
+answers_list = adata.get("answers", [])
+brief = adata.get("brief", "")
 
-# Loaded official 25 benchmark questions
+items = []
+for a in answers_list:
+    qid = a["question_id"]
+    qinfo = qmap.get(qid, {})
+    qtext = qinfo.get("question", a.get("question", ""))
+    team = qinfo.get("team", a.get("team", ""))
+    items.append({
+        "question_id": qid,
+        "team": team,
+        "question": qtext,
+        "answer": a.get("answer", ""),
+        "citations": a.get("citations", [])
+    })
 
 # Add categorization and clean keywords
 for item in items:
@@ -47,11 +66,9 @@ for item in items:
 items_json = json.dumps(items)
 brief_json = json.dumps(brief)
 
-# Connect to meeting_memory.db to extract real indexed turns across all 138 meetings
-import sqlite3
-from collections import defaultdict
-
-conn = sqlite3.connect('meeting_memory.db')
+# Connect to database (prefer data/meeting_store.db or meeting_memory.db)
+db_path = "data/meeting_store.db" if os.path.exists("data/meeting_store.db") else "meeting_memory.db"
+conn = sqlite3.connect(db_path)
 c = conn.cursor()
 
 # Collect all cited quotes from benchmark and expansion
@@ -1601,9 +1618,13 @@ html = f"""<!DOCTYPE html>
 with open("frontend/index.html", "w", encoding="utf-8") as f:
     f.write(html)
 
-# Also update the artifact
-artifact_path = "/Users/rashid/.gemini/antigravity/brain/ebe21b45-f191-4280-93f1-36de44185dde/catalist_dashboard.html"
-with open(artifact_path, "w", encoding="utf-8") as f:
-    f.write(html)
+# Also update the artifact if path is writable
+try:
+    artifact_path = "/Users/rashid/.gemini/antigravity/brain/ebe21b45-f191-4280-93f1-36de44185dde/catalist_dashboard.html"
+    if os.path.exists(os.path.dirname(artifact_path)):
+        with open(artifact_path, "w", encoding="utf-8") as f:
+            f.write(html)
+except Exception:
+    pass
 
 print(f"Successfully generated clean, decluttered dashboard with Ghost Chatbot ({len(html)} bytes)")

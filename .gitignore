@@ -1,7 +1,52 @@
+# ==============================================================================
+# Catalist Media Agentic AI - Git Ignore Specification
+# Prevents security vulnerabilities, secret leaks, and repository bloat.
+# ==============================================================================
+
+# 1. SECRETS & API KEYS (CRITICAL - NEVER COMMIT)
+.env
+.env.local
+.env.*.local
+*.env
+!*.env.example
+
+# 2. VIRTUAL ENVIRONMENTS
+.venv/
+venv/
+env/
+ENV/
+*.venv/
+
+# 3. PYTHON COMPILATION & CACHES
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 4. LARGE GENERATED DATABASES
+# (data/meeting_store.db is auto-generated on first run from transcripts/)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+*.db
+*.sqlite
+*.sqlite3
+
+# 5. OS & EDITOR ARTIFACTS
 .DS_Store
-.env
-.user_uploaded/
-Catalist_AI_Intern_Build_Test_Data.zip
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.log
